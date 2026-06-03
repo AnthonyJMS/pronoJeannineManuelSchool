@@ -147,8 +147,8 @@ const {useState,useEffect,useRef,useMemo,useCallback} = React;
 /* ============ SUPABASE CONFIG ============ */
 /* ⬇️ Replace these two values with YOUR Supabase project
    (Supabase dashboard → Project Settings → API). The anon key is public by design. */
-const SUPABASE_URL = 'https://YOUR-PROJECT.supabase.co';
-const SUPABASE_ANON_KEY = 'YOUR-ANON-PUBLIC-KEY';
+const SUPABASE_URL = 'https://haelbcldxfrmgpqkvwhd.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhhZWxiY2xkeGZybWdwcWt2d2hkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA0OTY5MDIsImV4cCI6MjA5NjA3MjkwMn0.dLaxgLkijo-7fU-uDdwcVdSAuOEJhmsThy2aoLrX8wU';
 
 const NEEDS_CONFIG = SUPABASE_URL.includes('YOUR') || SUPABASE_ANON_KEY.includes('YOUR');
 const SB_HEADERS = { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer '+SUPABASE_ANON_KEY };
