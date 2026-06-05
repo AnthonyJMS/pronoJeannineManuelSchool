@@ -182,6 +182,15 @@ const K = {
 /* device-local identity (no password) — uses localStorage, fine on GitHub Pages */
 function getMeId(){ try{ return localStorage.getItem('wc26:me')||null; }catch(e){ return null; } }
 function setMeId(v){ try{ localStorage.setItem('wc26:me', v||''); }catch(e){} }
+async function hashPin(pin){
+  const str='wc26salt:'+String(pin);
+  try{
+    const buf=await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+    return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+  }catch(e){ /* fallback if crypto.subtle unavailable */
+    let h=0; for(let i=0;i<str.length;i++){ h=((h<<5)-h+str.charCodeAt(i))|0; } return 'f'+(h>>>0).toString(16);
+  }
+}
 
 /* ============ DATA: TEAMS + OFFICIAL SCHEDULE ============ */
 const FLAG = {
@@ -366,17 +375,31 @@ function App(){
     setMyPred(p||{});
     setView('matches');
   }
-  async function doRegister(firstName,lastName,email,avatar){
+  async function doRegister(firstName,lastName,email,avatar,pin){
     const id = slug(firstName+'-'+lastName) || ('u'+Date.now());
     const fresh = await getJSON(K.roster,true,[])||[];
-    let user = fresh.find(x=>x.id===id);
-    if(!user){
-      user={id,prenom:firstName,nom:lastName,email:email||'',avatar:avatar||'⚽',createdAt:Date.now()};
-      const next=[...fresh,user];
-      await setJSON(K.roster,next,true);
-      setRoster(next);
-    } else { setRoster(fresh); }
+    if(fresh.find(x=>x.id===id)){ setRoster(fresh); return {ok:false, reason:'exists'}; }
+    const pinHash = await hashPin(pin);
+    const user={id,prenom:firstName,nom:lastName,email:email||'',avatar:avatar||'⚽',pinHash,createdAt:Date.now()};
+    const next=[...fresh,user];
+    await setJSON(K.roster,next,true);
+    setRoster(next);
     await doLogin(user);
+    return {ok:true};
+  }
+  async function setUserPin(user, pin){
+    const pinHash = await hashPin(pin);
+    const fresh = await getJSON(K.roster,true,[])||[];
+    const next = fresh.map(u=> u.id===user.id ? {...u, pinHash} : u);
+    await setJSON(K.roster, next, true);
+    setRoster(next);
+    return next.find(u=>u.id===user.id) || {...user, pinHash};
+  }
+  async function resetUserPin(userId){
+    const fresh = await getJSON(K.roster,true,[])||[];
+    const next = fresh.map(u=>{ if(u.id!==userId) return u; const c={...u}; delete c.pinHash; return c; });
+    await setJSON(K.roster, next, true);
+    setRoster(next);
   }
   function logout(){ setMe(null); setMeId(''); setView('matches'); }
 
@@ -413,7 +436,7 @@ function App(){
 
   if(NEEDS_CONFIG) return <SetupScreen/>;
   if(booting) return <div className="wrap"><div className="spin"></div><p className="center muted">Loading…</p></div>;
-  if(!me) return <Login roster={roster} onLogin={doLogin} onRegister={doRegister}/>;
+  if(!me) return <Login roster={roster} onLogin={doLogin} onRegister={doRegister} onSetPin={setUserPin}/>;
 
   return (
    <div>
@@ -436,7 +459,7 @@ function App(){
       {view==='leaderboard' && <Leaderboard standings={standings} me={me} admin={admin} onMount={loadAllPreds}/>}
       {view==='space' && <Space me={me} myPred={myPred} admin={admin} standings={standings} now={now} onMount={loadAllPreds}/>}
       {view==='stats' && <Stats standings={standings} allPreds={allPreds} admin={admin} onMount={loadAllPreds}/>}
-      {view==='admin' && <Admin admin={admin} setAdmin={setAdmin} standings={standings} showToast={showToast} reload={reloadCore} loadAllPreds={loadAllPreds}/>}
+      {view==='admin' && <Admin admin={admin} setAdmin={setAdmin} standings={standings} showToast={showToast} reload={reloadCore} loadAllPreds={loadAllPreds} roster={roster} resetUserPin={resetUserPin}/>}
     </div>
 
     <nav className="tabs">
@@ -458,10 +481,43 @@ function Tab({id,cur,set,ic,label,admin}){
 }
 
 /* ============ LOGIN ============ */
-function Login({roster,onLogin,onRegister}){
+function Login({roster,onLogin,onRegister,onSetPin}){
   const [mode,setMode]=useState(roster.length?'pick':'new');
   const [firstName,setFirstName]=useState(''),[lastName,setLastName]=useState(''),[email,setEmail]=useState('');
   const [ava,setAva]=useState('⚽');
+  const [pin,setPin]=useState(''),[pin2,setPin2]=useState('');
+  const [pendingUser,setPendingUser]=useState(null);
+  const [loginPin,setLoginPin]=useState('');
+  const [err,setErr]=useState('');
+  const [busy,setBusy]=useState(false);
+
+  const onlyDigits=(v)=>v.replace(/[^0-9]/g,'').slice(0,4);
+  function selectUser(u){ setPendingUser(u); setLoginPin(''); setPin(''); setPin2(''); setErr(''); }
+  function backToPick(){ setPendingUser(null); setErr(''); }
+
+  async function verifyAndLogin(){
+    if(busy) return;
+    if(loginPin.length<4){ setErr('Enter your 4-digit code.'); return; }
+    setBusy(true); const h=await hashPin(loginPin); setBusy(false);
+    if(h===pendingUser.pinHash){ onLogin(pendingUser); } else { setErr('Wrong code — try again.'); }
+  }
+  async function setPinThenLogin(){
+    if(busy) return;
+    if(pin.length<4){ setErr('Choose a 4-digit code.'); return; }
+    if(pin!==pin2){ setErr("Codes don't match."); return; }
+    setBusy(true); const u=await onSetPin(pendingUser, pin); setBusy(false); onLogin(u);
+  }
+  async function doNew(){
+    if(busy) return;
+    if(!firstName.trim()||!lastName.trim()){ setErr('Enter your first name and surname.'); return; }
+    if(pin.length<4){ setErr('Choose a 4-digit code.'); return; }
+    if(pin!==pin2){ setErr("Codes don't match."); return; }
+    setBusy(true);
+    const res=await onRegister(firstName.trim(),lastName.trim(),email.trim(),ava,pin);
+    setBusy(false);
+    if(res && res.ok===false && res.reason==='exists'){ setErr('That name already exists — go back and pick it from the list, then enter its code.'); }
+  }
+
   return (
    <div className="wrap fade" style={{paddingTop:30,maxWidth:480}}>
      <div className="center" style={{marginBottom:18}}>
@@ -470,24 +526,46 @@ function Login({roster,onLogin,onRegister}){
        <p className="muted" style={{marginTop:0}}>The staff prediction game · 11 June → 19 July</p>
      </div>
 
-     {mode==='pick' && (
+     {pendingUser ? (
+       <div className="card">
+         <button className="linkbtn" onClick={backToPick}>‹ Back</button>
+         <h3 style={{margin:'6px 0 2px',fontSize:18}}><span style={{marginRight:6}}>{pendingUser.avatar}</span>{pendingUser.prenom} {pendingUser.nom}</h3>
+         {pendingUser.pinHash ? (
+           <>
+             <p className="muted" style={{fontSize:13}}>Enter your personal code to open your predictions.</p>
+             <input className="inp" type="password" inputMode="numeric" placeholder="4-digit code" value={loginPin}
+               onChange={e=>setLoginPin(onlyDigits(e.target.value))} onKeyDown={e=>{if(e.key==='Enter')verifyAndLogin();}}/>
+             {err && <p className="pill red" style={{marginTop:10}}>{err}</p>}
+             <button className="btn" style={{width:'100%',marginTop:12}} disabled={busy} onClick={verifyAndLogin}>{busy?'…':'Sign in'}</button>
+           </>
+         ) : (
+           <>
+             <p className="muted" style={{fontSize:13}}>First time on this account — set a personal code to protect your predictions. You'll use it to sign in from now on.</p>
+             <input className="inp" type="password" inputMode="numeric" placeholder="Choose a 4-digit code" value={pin}
+               onChange={e=>setPin(onlyDigits(e.target.value))} style={{marginBottom:10}}/>
+             <input className="inp" type="password" inputMode="numeric" placeholder="Confirm code" value={pin2}
+               onChange={e=>setPin2(onlyDigits(e.target.value))}/>
+             {err && <p className="pill red" style={{marginTop:10}}>{err}</p>}
+             <button className="btn" style={{width:'100%',marginTop:12}} disabled={busy} onClick={setPinThenLogin}>{busy?'…':'Save code & sign in'}</button>
+           </>
+         )}
+       </div>
+     ) : mode==='pick' ? (
        <div className="card">
          <h3 style={{marginTop:0,fontSize:18}}>I'm…</h3>
          <div style={{maxHeight:280,overflowY:'auto',margin:'4px 0 12px'}}>
            {roster.length===0 && <p className="muted">No participants yet.</p>}
            {roster.map(u=>(
-             <div key={u.id} className="userpick" onClick={()=>onLogin(u)}>
+             <div key={u.id} className="userpick" onClick={()=>selectUser(u)}>
                <span className="ava">{u.avatar}</span>
                <span style={{fontWeight:700}}>{u.prenom} {u.nom}</span>
-               <span style={{marginLeft:'auto'}} className="muted">›</span>
+               <span style={{marginLeft:'auto'}} className="muted">🔒 ›</span>
              </div>
            ))}
          </div>
-         <button className="btn ghost" style={{width:'100%'}} onClick={()=>setMode('new')}>+ New participant</button>
+         <button className="btn ghost" style={{width:'100%'}} onClick={()=>{setMode('new');setErr('');}}>+ New participant</button>
        </div>
-     )}
-
-     {mode==='new' && (
+     ) : (
        <div className="card">
          <h3 style={{marginTop:0,fontSize:18}}>Sign up</h3>
          <div style={{display:'flex',gap:10,marginBottom:10}}>
@@ -495,17 +573,22 @@ function Login({roster,onLogin,onRegister}){
            <input className="inp" placeholder="Surname" value={lastName} onChange={e=>setLastName(e.target.value)}/>
          </div>
          <input className="inp" placeholder="Work email (optional)" value={email} onChange={e=>setEmail(e.target.value)} style={{marginBottom:10}}/>
+         <div style={{display:'flex',gap:10,marginBottom:10}}>
+           <input className="inp" type="password" inputMode="numeric" placeholder="Choose a 4-digit code" value={pin} onChange={e=>setPin(onlyDigits(e.target.value))}/>
+           <input className="inp" type="password" inputMode="numeric" placeholder="Confirm code" value={pin2} onChange={e=>setPin2(onlyDigits(e.target.value))}/>
+         </div>
          <div className="muted" style={{fontSize:13}}>Pick your avatar:</div>
          <div className="emoji-grid">
            {AVATARS.map(a=><button key={a} className={ava===a?'on':''} onClick={()=>setAva(a)}>{a}</button>)}
          </div>
-         <button className="btn" style={{width:'100%',marginTop:14}} disabled={!firstName.trim()||!lastName.trim()}
-           onClick={()=>onRegister(firstName.trim(),lastName.trim(),email.trim(),ava)}>Join the game</button>
-         {roster.length>0 && <button className="linkbtn" style={{display:'block',margin:'12px auto 0'}} onClick={()=>setMode('pick')}>‹ I already have an account</button>}
+         {err && <p className="pill red" style={{marginTop:12}}>{err}</p>}
+         <button className="btn" style={{width:'100%',marginTop:14}} disabled={busy} onClick={doNew}>{busy?'…':'Join the game'}</button>
+         {roster.length>0 && <button className="linkbtn" style={{display:'block',margin:'12px auto 0'}} onClick={()=>{setMode('pick');setErr('');}}>‹ I already have an account</button>}
        </div>
      )}
+
      <p className="muted center" style={{fontSize:11.5,marginTop:16}}>
-       Predictions and the leaderboard are shared and visible to all participants. No password — you sign in with your name.
+       Your personal code keeps your predictions private. Everyone's picks for a match are revealed only after kick-off.
      </p>
    </div>
   );
@@ -658,7 +741,10 @@ function VotesBreakdown({matchId,allPreds}){
 /* ============ LEADERBOARD ============ */
 function Leaderboard({standings,me,admin,onMount}){
   const [loading,setLoading]=useState(true);
+  const [refreshing,setRefreshing]=useState(false);
+  const [justUpdated,setJustUpdated]=useState(false);
   useEffect(()=>{(async()=>{await onMount(); setLoading(false);})();},[]);
+  async function doRefresh(){ if(refreshing) return; setRefreshing(true); await onMount(); setRefreshing(false); setJustUpdated(true); setTimeout(()=>setJustUpdated(false),1600); }
   const evo=(id,rank)=>{ const pr=admin.prevRanks[id]; if(pr==null) return {t:'▬',c:'eq'}; if(rank<pr) return {t:'▲ +'+(pr-rank),c:'up'}; if(rank>pr) return {t:'▼ -'+(rank-pr),c:'down'}; return {t:'▬',c:'eq'}; };
   function exportCSV(){
     const rows=[['Rank','First name','Surname','Points','Exact scores','Correct results']];
@@ -672,7 +758,7 @@ function Leaderboard({standings,me,admin,onMount}){
    <div className="fade sec">
      <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:12}}>
        <h2 style={{fontSize:24,margin:0}}>🏆 Overall leaderboard</h2>
-       <button className="btn sm ghost" style={{marginLeft:'auto'}} onClick={onMount}>↻ Refresh</button>
+       <button className="btn sm ghost" style={{marginLeft:'auto'}} disabled={refreshing} onClick={doRefresh}>{refreshing?'↻ Refreshing…':(justUpdated?'✓ Updated':'↻ Refresh')}</button>
        <button className="btn sm ghost" onClick={exportCSV}>⬇ CSV</button>
      </div>
      {standings.length===0 && <div className="card center muted">No participants yet.</div>}
@@ -794,7 +880,7 @@ function Stats({standings,allPreds,admin,onMount}){
 }
 
 /* ============ ADMIN ============ */
-function Admin({admin,setAdmin,standings,showToast,reload,loadAllPreds}){
+function Admin({admin,setAdmin,standings,showToast,reload,loadAllPreds,roster,resetUserPin}){
   const [unlocked,setUnlocked]=useState(false);
   const [pinIn,setPinIn]=useState('');
   const [tab,setTab]=useState('results');
@@ -885,6 +971,16 @@ function Admin({admin,setAdmin,standings,showToast,reload,loadAllPreds}){
          <button className="btn ghost" onClick={async()=>{await reload(); await loadAllPreds(); showToast('Data reloaded');}}>↻ Reload data</button>
          <div style={{height:14}}/>
          <p className="muted" style={{fontSize:12}}>Registered participants: <b>{standings.length}</b> · Results entered: <b>{Object.values(admin.results).filter(r=>r.a!=null&&r.b!=null).length}</b></p>
+
+         <h3 style={{margin:'18px 0 4px'}}>Player codes</h3>
+         <p className="muted" style={{fontSize:13}}>If a colleague forgets their 4-digit code, reset it here. They'll simply choose a new one next time they sign in — <b>their predictions are kept</b>.</p>
+         {(roster||[]).length===0 && <p className="muted" style={{fontSize:13}}>No participants yet.</p>}
+         {(roster||[]).map(u=>(
+           <div key={u.id} className="adminmatch">
+             <span className="nmcol">{u.avatar} {u.prenom} {u.nom} {u.pinHash? <span className="muted">🔒 code set</span> : <span style={{color:'var(--gold)'}}>code not set yet</span>}</span>
+             {u.pinHash && <button className="linkbtn" onClick={()=>{ if(confirm('Reset code for '+u.prenom+' '+u.nom+'? Their predictions are kept.')){ resetUserPin(u.id); showToast('Code reset for '+u.prenom); } }}>Reset code</button>}
+           </div>
+         ))}
        </div>
      )}
    </div>
