@@ -595,13 +595,13 @@ function Login({roster,onLogin,onRegister,onSetPin}){
 
 /* ============ MATCHES ============ */
 function Matches({me,myPred,admin,now,savePred,allPreds,loadAllPreds}){
-  const [filter,setFilter]=useState('all');
+  const [filter,setFilter]=useState('upcoming');
   const next = MATCHES.find(m=>m.kickoff.getTime()>now);
   const teamName=(m,side)=>{ const ov=admin.koTeams[m.id]; if(ov && ov[side]) return ov[side]; return m[side]; };
 
   let list = MATCHES;
   if(filter==='upcoming') list=list.filter(m=>m.kickoff.getTime()>now);
-  if(filter==='played') list=list.filter(m=>m.kickoff.getTime()<=now);
+  if(filter==='played') list=list.filter(m=>m.kickoff.getTime()<=now).reverse();
   if(filter==='groups') list=list.filter(m=>!m.ko);
   if(filter==='ko') list=list.filter(m=>m.ko);
 
@@ -625,7 +625,7 @@ function Matches({me,myPred,admin,now,savePred,allPreds,loadAllPreds}){
      )}
 
      <div style={{display:'flex',gap:7,overflowX:'auto',margin:'16px 0 4px',paddingBottom:4}}>
-       {[['all','All'],['upcoming','Upcoming'],['played','Played'],['groups','Groups'],['ko','Knockouts']].map(f=>(
+       {[['upcoming','Upcoming'],['played','Played'],['groups','Groups'],['ko','Knockouts']].map(f=>(
          <button key={f[0]} className={'btn sm '+(filter===f[0]?'':'ghost')} onClick={()=>setFilter(f[0])} style={{whiteSpace:'nowrap'}}>{f[1]}</button>
        ))}
      </div>
