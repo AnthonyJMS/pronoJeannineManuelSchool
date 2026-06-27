@@ -673,7 +673,7 @@ function MatchCard({m,teamName,pred,res,bonus,now,savePred,allPreds,loadAllPreds
        {!locked && <span className="pill g">⏳ {countdown(m.kickoff.getTime()-now)}</span>}
        {locked && <span className="pill" style={{opacity:.7}}>🔒 locked</span>}
      </div>
-
+{m.ko && <div className="muted" style={{fontSize:11,marginTop:-4,marginBottom:2}}>⚽ Predict the 90-min score — extra time & penalties don't count</div>}
      <div className="row">
        <div className="team"><span className="fl">{fl(ta)}</span><span className="nm">{ta}</span></div>
        {locked
